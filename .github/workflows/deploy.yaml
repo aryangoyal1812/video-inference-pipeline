@@ -116,6 +116,10 @@ jobs:
           kubectl apply -f inference/service.yaml
           kubectl apply -f inference/hpa.yaml || true  # HPA with KEDA may fail if KEDA not installed
           kubectl apply -f consumer/
+          
+          # Force pods to restart and pull new images
+          kubectl rollout restart deployment/inference-service -n video-pipeline
+          kubectl rollout restart deployment/consumer -n video-pipeline
 
       - name: Wait for deployments
         run: |
