@@ -156,6 +156,37 @@ jobs:
           echo "=== Services ==="
           kubectl get services -n video-pipeline
 
+      - name: Deploy producer to EC2
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
+        run: |
+          # Get EC2 instance ID for RTSP server (runs producer)
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=*rtsp*" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' --output text)
+          
+          if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+            echo "Updating producer on EC2 instance: $INSTANCE_ID"
+            
+            # Use SSM to pull new image and restart producer container
+            aws ssm send-command \
+              --instance-ids "$INSTANCE_ID" \
+              --document-name "AWS-RunShellScript" \
+              --parameters "commands=[
+                'aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${ECR_REGISTRY}',
+                'docker pull ${ECR_REGISTRY}/video-pipeline/producer:${IMAGE_TAG}',
+                'docker stop producer || true',
+                'docker rm producer || true',
+                'docker run -d --name producer --network host -e KAFKA_BOOTSTRAP_SERVERS=\$(aws kafka get-bootstrap-brokers --cluster-arn \$(aws kafka list-clusters --query ClusterInfoList[0].ClusterArn --output text) --query BootstrapBrokerString --output text) -e RTSP_URL=rtsp://localhost:8554/stream ${ECR_REGISTRY}/video-pipeline/producer:${IMAGE_TAG}'
+              ]" \
+              --output text
+            
+            echo "Producer deployment command sent to EC2"
+          else
+            echo "No running RTSP EC2 instance found - skipping producer deployment"
+          fi
+
       - name: Run smoke test
         run: |
           # Port forward to inference service
