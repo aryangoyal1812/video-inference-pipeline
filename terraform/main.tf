@@ -1,0 +1,48 @@
+terraform {
+  required_version = ">= 1.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.23"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = {
+      Project     = "video-pipeline"
+      Environment = var.environment
+      ManagedBy   = "terraform"
+    }
+  }
+}
+
+# Data source for availability zones
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+# Data source for current AWS account
+data "aws_caller_identity" "current" {}
+
+# Locals for common configurations
+locals {
+  name            = "video-pipeline"
+  cluster_version = "1.31"  # Updated: 1.28 is deprecated, using latest supported version
+  
+  azs = slice(data.aws_availability_zones.available.names, 0, 3)
+
+  tags = {
+    Project     = local.name
+    Environment = var.environment
+  }
+}
+

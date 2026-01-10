@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: video-pipeline-config
+  namespace: video-pipeline
+  labels:
+    app.kubernetes.io/name: video-pipeline
+data:
+  # Kafka configuration
+  KAFKA_TOPIC: "video-frames"
+  KAFKA_GROUP_ID: "frame-consumer-group"
+  KAFKA_AUTO_OFFSET_RESET: "earliest"
+  
+  # Inference configuration
+  INFERENCE_MODEL_NAME: "yolov8n.pt"
+  INFERENCE_CONFIDENCE_THRESHOLD: "0.5"
+  INFERENCE_MAX_BATCH_SIZE: "25"
+  INFERENCE_MODEL_DEVICE: "cpu"
+  
+  # Processing configuration
+  BATCH_SIZE: "25"
+  BATCH_TIMEOUT_SECONDS: "5.0"
+  
+  # S3 configuration
+  S3_PREFIX: "annotated"
+  
+  # AWS configuration
+  AWS_REGION: "us-east-1"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: video-pipeline-secrets
+  namespace: video-pipeline
+  labels:
+    app.kubernetes.io/name: video-pipeline
+type: Opaque
+stringData:
+  # These will be populated during deployment
+  # KAFKA_BOOTSTRAP_SERVERS: "placeholder"
+  # S3_BUCKET: "placeholder"
+  placeholder: "replace-during-deployment"
+

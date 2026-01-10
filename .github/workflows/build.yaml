@@ -1,0 +1,174 @@
+name: Build and Push Images
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'services/**'
+      - '.github/workflows/build.yaml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'services/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      producer: ${{ steps.changes.outputs.producer }}
+      inference: ${{ steps.changes.outputs.inference }}
+      consumer: ${{ steps.changes.outputs.consumer }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect changes
+        id: changes
+        uses: dorny/paths-filter@v2
+        with:
+          filters: |
+            producer:
+              - 'services/producer/**'
+            inference:
+              - 'services/inference/**'
+            consumer:
+              - 'services/consumer/**'
+
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [producer, inference, consumer]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'services/${{ matrix.service }}/requirements.txt'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff pytest
+          pip install -r services/${{ matrix.service }}/requirements.txt
+
+      - name: Lint with ruff
+        run: |
+          ruff check services/${{ matrix.service }}/
+
+      - name: Run tests
+        run: |
+          cd services/${{ matrix.service }}
+          if [ -d "tests" ]; then
+            pytest tests/ -v
+          else
+            echo "No tests directory found, skipping tests"
+          fi
+
+  build-producer:
+    needs: [detect-changes, lint-and-test]
+    if: needs.detect-changes.outputs.producer == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push producer image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/video-pipeline/producer:$IMAGE_TAG \
+                       -t $ECR_REGISTRY/video-pipeline/producer:latest \
+                       services/producer/
+          docker push $ECR_REGISTRY/video-pipeline/producer:$IMAGE_TAG
+          docker push $ECR_REGISTRY/video-pipeline/producer:latest
+
+  build-inference:
+    needs: [detect-changes, lint-and-test]
+    if: needs.detect-changes.outputs.inference == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push inference image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/video-pipeline/inference:$IMAGE_TAG \
+                       -t $ECR_REGISTRY/video-pipeline/inference:latest \
+                       services/inference/
+          docker push $ECR_REGISTRY/video-pipeline/inference:$IMAGE_TAG
+          docker push $ECR_REGISTRY/video-pipeline/inference:latest
+
+  build-consumer:
+    needs: [detect-changes, lint-and-test]
+    if: needs.detect-changes.outputs.consumer == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push consumer image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/video-pipeline/consumer:$IMAGE_TAG \
+                       -t $ECR_REGISTRY/video-pipeline/consumer:latest \
+                       services/consumer/
+          docker push $ECR_REGISTRY/video-pipeline/consumer:$IMAGE_TAG
+          docker push $ECR_REGISTRY/video-pipeline/consumer:latest
+

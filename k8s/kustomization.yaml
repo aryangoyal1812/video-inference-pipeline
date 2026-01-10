@@ -1,0 +1,28 @@
+# Kustomization for managing K8s resources
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: video-pipeline
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - inference/deployment.yaml
+  - inference/service.yaml
+  - inference/hpa.yaml
+  - consumer/deployment.yaml
+
+# Common labels applied to all resources
+commonLabels:
+  app.kubernetes.io/part-of: video-pipeline
+  app.kubernetes.io/managed-by: kustomize
+
+# Images can be overridden during deployment
+images:
+  - name: ${ECR_REGISTRY}/video-pipeline/inference
+    newName: PLACEHOLDER_REGISTRY/video-pipeline/inference
+    newTag: latest
+  - name: ${ECR_REGISTRY}/video-pipeline/consumer
+    newName: PLACEHOLDER_REGISTRY/video-pipeline/consumer
+    newTag: latest
+

@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: consumer-sa
+  namespace: video-pipeline
+  labels:
+    app: consumer
+  annotations:
+    # This annotation will be replaced with the actual role ARN from Terraform output
+    eks.amazonaws.com/role-arn: ${CONSUMER_ROLE_ARN}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consumer
+  namespace: video-pipeline
+  labels:
+    app: consumer
+    app.kubernetes.io/name: consumer
+    app.kubernetes.io/component: consumer
+    app.kubernetes.io/part-of: video-pipeline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: consumer
+  template:
+    metadata:
+      labels:
+        app: consumer
+        app.kubernetes.io/name: consumer
+    spec:
+      serviceAccountName: consumer-sa
+      containers:
+        - name: consumer
+          image: ${ECR_REGISTRY}/video-pipeline/consumer:latest
+          imagePullPolicy: Always
+          env:
+            # Kafka configuration
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              valueFrom:
+                secretKeyRef:
+                  name: video-pipeline-secrets
+                  key: KAFKA_BOOTSTRAP_SERVERS
+                  optional: true
+            - name: KAFKA_TOPIC
+              valueFrom:
+                configMapKeyRef:
+                  name: video-pipeline-config
+                  key: KAFKA_TOPIC
+            - name: KAFKA_GROUP_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: video-pipeline-config
+                  key: KAFKA_GROUP_ID
+            - name: KAFKA_AUTO_OFFSET_RESET
+              valueFrom:
+                configMapKeyRef:
+                  name: video-pipeline-config
+                  key: KAFKA_AUTO_OFFSET_RESET
+            
+            # Inference service URL
+            - name: INFERENCE_SERVICE_URL
+              value: "http://inference-service:8000"
+            
+            # S3 configuration
+            - name: S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: video-pipeline-secrets
+                  key: S3_BUCKET
+                  optional: true
+            - name: S3_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: video-pipeline-config
+                  key: S3_PREFIX
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: video-pipeline-config
+                  key: AWS_REGION
+            
+            # Processing configuration
+            - name: BATCH_SIZE
+              valueFrom:
+                configMapKeyRef:
+                  name: video-pipeline-config
+                  key: BATCH_SIZE
+            - name: BATCH_TIMEOUT_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: video-pipeline-config
+                  key: BATCH_TIMEOUT_SECONDS
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 60
+

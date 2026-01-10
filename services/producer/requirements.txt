@@ -1,0 +1,7 @@
+opencv-python-headless==4.9.0.80
+confluent-kafka==2.3.0
+numpy==1.26.3
+Pillow==10.2.0
+python-dotenv==1.0.0
+structlog==24.1.0
+

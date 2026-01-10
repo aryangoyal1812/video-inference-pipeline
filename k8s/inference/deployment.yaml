@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-service
+  namespace: video-pipeline
+  labels:
+    app: inference-service
+    app.kubernetes.io/name: inference-service
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: video-pipeline
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: inference-service
+  template:
+    metadata:
+      labels:
+        app: inference-service
+        app.kubernetes.io/name: inference-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: inference
+          image: ${ECR_REGISTRY}/video-pipeline/inference:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: INFERENCE_MODEL_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: video-pipeline-config
+                  key: INFERENCE_MODEL_NAME
+            - name: INFERENCE_CONFIDENCE_THRESHOLD
+              valueFrom:
+                configMapKeyRef:
+                  name: video-pipeline-config
+                  key: INFERENCE_CONFIDENCE_THRESHOLD
+            - name: INFERENCE_MAX_BATCH_SIZE
+              valueFrom:
+                configMapKeyRef:
+                  name: video-pipeline-config
+                  key: INFERENCE_MAX_BATCH_SIZE
+            - name: INFERENCE_MODEL_DEVICE
+              valueFrom:
+                configMapKeyRef:
+                  name: video-pipeline-config
+                  key: INFERENCE_MODEL_DEVICE
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+

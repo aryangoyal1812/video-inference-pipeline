@@ -1,0 +1,148 @@
+name: Deploy to EKS
+
+on:
+  workflow_run:
+    workflows: ["Build and Push Images"]
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      image_tag:
+        description: 'Image tag to deploy (defaults to latest)'
+        required: false
+        default: 'latest'
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: video-pipeline-cluster
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      id-token: write
+      contents: read
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Get Terraform outputs
+        id: tf-outputs
+        run: |
+          cd terraform
+          terraform init -backend=false
+          
+          # Get MSK bootstrap servers and S3 bucket from AWS
+          MSK_CLUSTER_ARN=$(aws kafka list-clusters --query 'ClusterInfoList[?ClusterName==`video-pipeline-kafka`].ClusterArn' --output text)
+          if [ -n "$MSK_CLUSTER_ARN" ]; then
+            KAFKA_BOOTSTRAP=$(aws kafka get-bootstrap-brokers --cluster-arn $MSK_CLUSTER_ARN --query 'BootstrapBrokerString' --output text)
+            echo "kafka_bootstrap=$KAFKA_BOOTSTRAP" >> $GITHUB_OUTPUT
+          fi
+          
+          S3_BUCKET=$(aws s3api list-buckets --query 'Buckets[?starts_with(Name, `video-pipeline-output`)].Name' --output text | head -1)
+          echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
+          
+          CONSUMER_ROLE_ARN=$(aws iam get-role --role-name video-pipeline-consumer-pod --query 'Role.Arn' --output text 2>/dev/null || echo "")
+          echo "consumer_role_arn=$CONSUMER_ROLE_ARN" >> $GITHUB_OUTPUT
+
+      - name: Update secrets
+        env:
+          KAFKA_BOOTSTRAP: ${{ steps.tf-outputs.outputs.kafka_bootstrap }}
+          S3_BUCKET: ${{ steps.tf-outputs.outputs.s3_bucket }}
+        run: |
+          kubectl create namespace video-pipeline --dry-run=client -o yaml | kubectl apply -f -
+          
+          kubectl create secret generic video-pipeline-secrets \
+            --namespace video-pipeline \
+            --from-literal=KAFKA_BOOTSTRAP_SERVERS="${KAFKA_BOOTSTRAP}" \
+            --from-literal=S3_BUCKET="${S3_BUCKET}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy with Kustomize
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.event.inputs.image_tag || 'latest' }}
+          CONSUMER_ROLE_ARN: ${{ steps.tf-outputs.outputs.consumer_role_arn }}
+        run: |
+          cd k8s
+          
+          # Update image references
+          kustomize edit set image \
+            PLACEHOLDER_REGISTRY/video-pipeline/inference=${ECR_REGISTRY}/video-pipeline/inference:${IMAGE_TAG} \
+            PLACEHOLDER_REGISTRY/video-pipeline/consumer=${ECR_REGISTRY}/video-pipeline/consumer:${IMAGE_TAG}
+          
+          # Apply manifests
+          kubectl apply -f namespace.yaml
+          kubectl apply -f configmap.yaml
+          
+          # Update consumer service account annotation
+          if [ -n "$CONSUMER_ROLE_ARN" ]; then
+            sed -i "s|\${CONSUMER_ROLE_ARN}|${CONSUMER_ROLE_ARN}|g" consumer/deployment.yaml
+          fi
+          
+          # Update image placeholders
+          sed -i "s|\${ECR_REGISTRY}|${ECR_REGISTRY}|g" inference/deployment.yaml
+          sed -i "s|\${ECR_REGISTRY}|${ECR_REGISTRY}|g" consumer/deployment.yaml
+          
+          kubectl apply -f inference/
+          kubectl apply -f consumer/
+
+      - name: Wait for deployments
+        run: |
+          kubectl rollout status deployment/inference-service -n video-pipeline --timeout=300s
+          kubectl rollout status deployment/consumer -n video-pipeline --timeout=300s
+
+      - name: Verify deployment
+        run: |
+          echo "=== Deployment Status ==="
+          kubectl get deployments -n video-pipeline
+          
+          echo ""
+          echo "=== Pod Status ==="
+          kubectl get pods -n video-pipeline
+          
+          echo ""
+          echo "=== Services ==="
+          kubectl get services -n video-pipeline
+
+      - name: Run smoke test
+        run: |
+          # Port forward to inference service
+          kubectl port-forward svc/inference-service 8000:8000 -n video-pipeline &
+          sleep 5
+          
+          # Check health endpoint
+          curl -sf http://localhost:8000/health || exit 1
+          echo "Smoke test passed!"
+          
+          # Cleanup
+          pkill -f "port-forward" || true
+

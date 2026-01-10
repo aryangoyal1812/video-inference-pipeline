@@ -1,0 +1,72 @@
+# Horizontal Pod Autoscaler for Inference Service
+# For basic CPU-based autoscaling
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inference-service-hpa
+  namespace: video-pipeline
+  labels:
+    app: inference-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: inference-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+      selectPolicy: Max
+---
+# BONUS: KEDA ScaledObject for Kafka lag-based autoscaling
+# Requires KEDA to be installed: https://keda.sh/
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: inference-service-keda
+  namespace: video-pipeline
+  labels:
+    app: inference-service
+spec:
+  scaleTargetRef:
+    name: inference-service
+  pollingInterval: 15
+  cooldownPeriod: 300
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: "${KAFKA_BOOTSTRAP_SERVERS}"
+        consumerGroup: "frame-consumer-group"
+        topic: "video-frames"
+        lagThreshold: "100"
+        # Scale up when lag exceeds 100 messages per partition
+
