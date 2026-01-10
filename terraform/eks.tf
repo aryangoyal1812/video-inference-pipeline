@@ -43,6 +43,11 @@ module "eks" {
       rolearn  = aws_iam_role.eks_admin.arn
       username = "admin"
       groups   = ["system:masters"]
+    },
+    {
+      rolearn  = "arn:aws:iam::281789400082:role/github-actions-video-pipeline"
+      username = "github-actions"
+      groups   = ["system:masters"]
     }
   ]
 
