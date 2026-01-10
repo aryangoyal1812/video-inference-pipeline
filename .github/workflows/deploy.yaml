@@ -19,9 +19,9 @@ on:
           - staging
           - prod
       image_tag:
-        description: 'Image tag to deploy (defaults to latest)'
+        description: 'Image tag to deploy (defaults to commit SHA)'
         required: false
-        default: 'latest'
+        default: ''
 
 env:
   AWS_REGION: us-east-1
@@ -85,10 +85,24 @@ jobs:
             --from-literal=S3_BUCKET="${S3_BUCKET}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Determine image tag
+        id: image-tag
+        run: |
+          # Use commit SHA from triggering workflow, manual input, or current SHA
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            TAG="${{ github.event.inputs.image_tag }}"
+          elif [ -n "${{ github.event.workflow_run.head_sha }}" ]; then
+            TAG="${{ github.event.workflow_run.head_sha }}"
+          else
+            TAG="${{ github.sha }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Using image tag: $TAG"
+
       - name: Deploy with Kustomize
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.event.inputs.image_tag || 'latest' }}
+          IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
           CONSUMER_ROLE_ARN: ${{ steps.tf-outputs.outputs.consumer_role_arn }}
         run: |
           cd k8s
@@ -107,19 +121,17 @@ jobs:
             sed -i "s|\${CONSUMER_ROLE_ARN}|${CONSUMER_ROLE_ARN}|g" consumer/deployment.yaml
           fi
           
-          # Update image placeholders (Linux sed)
+          # Update image tags with commit SHA (Linux sed)
           sed -i "s|\${ECR_REGISTRY}|${ECR_REGISTRY}|g" inference/deployment.yaml
           sed -i "s|\${ECR_REGISTRY}|${ECR_REGISTRY}|g" consumer/deployment.yaml
+          sed -i "s|:latest|:${IMAGE_TAG}|g" inference/deployment.yaml
+          sed -i "s|:latest|:${IMAGE_TAG}|g" consumer/deployment.yaml
           
-          # Apply Kubernetes manifests (skip KEDA if not installed)
+          # Apply Kubernetes manifests - new image tag triggers automatic pod restart
           kubectl apply -f inference/deployment.yaml
           kubectl apply -f inference/service.yaml
           kubectl apply -f inference/hpa.yaml || true  # HPA with KEDA may fail if KEDA not installed
           kubectl apply -f consumer/
-          
-          # Force pods to restart and pull new images
-          kubectl rollout restart deployment/inference-service -n video-pipeline
-          kubectl rollout restart deployment/consumer -n video-pipeline
 
       - name: Wait for deployments
         run: |
