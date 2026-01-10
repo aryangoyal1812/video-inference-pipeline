@@ -21,6 +21,8 @@ metadata:
     app.kubernetes.io/part-of: video-pipeline
 spec:
   replicas: 1
+  strategy:
+    type: Recreate  # Kill old pod before starting new (needed for small nodes)
   selector:
     matchLabels:
       app: consumer

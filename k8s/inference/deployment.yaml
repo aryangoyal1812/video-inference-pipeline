@@ -10,6 +10,8 @@ metadata:
     app.kubernetes.io/part-of: video-pipeline
 spec:
   replicas: 1  # Reduced for t3.small node
+  strategy:
+    type: Recreate  # Kill old pod before starting new (needed for small nodes)
   selector:
     matchLabels:
       app: inference-service
