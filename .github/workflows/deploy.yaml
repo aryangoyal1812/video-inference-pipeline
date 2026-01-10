@@ -99,18 +99,40 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Using image tag: $TAG"
 
-      - name: Deploy with Kustomize
+      - name: Check which images exist
+        id: check-images
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
+        run: |
+          # Check if each image exists with the commit SHA tag
+          # If not, fall back to 'latest'
+          
+          for service in inference consumer producer; do
+            if aws ecr describe-images --repository-name video-pipeline/$service --image-ids imageTag=$IMAGE_TAG 2>/dev/null; then
+              echo "${service}_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+              echo "$service: using SHA tag $IMAGE_TAG"
+            else
+              echo "${service}_tag=latest" >> $GITHUB_OUTPUT
+              echo "$service: using latest tag (SHA not found)"
+            fi
+          done
+
+      - name: Deploy with Kustomize
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          INFERENCE_TAG: ${{ steps.check-images.outputs.inference_tag }}
+          CONSUMER_TAG: ${{ steps.check-images.outputs.consumer_tag }}
           CONSUMER_ROLE_ARN: ${{ steps.tf-outputs.outputs.consumer_role_arn }}
         run: |
           cd k8s
           
+          echo "Deploying inference:$INFERENCE_TAG, consumer:$CONSUMER_TAG"
+          
           # Update image references using kustomize
           kustomize edit set image \
-            PLACEHOLDER_REGISTRY/video-pipeline/inference=${ECR_REGISTRY}/video-pipeline/inference:${IMAGE_TAG} \
-            PLACEHOLDER_REGISTRY/video-pipeline/consumer=${ECR_REGISTRY}/video-pipeline/consumer:${IMAGE_TAG}
+            PLACEHOLDER_REGISTRY/video-pipeline/inference=${ECR_REGISTRY}/video-pipeline/inference:${INFERENCE_TAG} \
+            PLACEHOLDER_REGISTRY/video-pipeline/consumer=${ECR_REGISTRY}/video-pipeline/consumer:${CONSUMER_TAG}
           
           # Apply manifests
           kubectl apply -f namespace.yaml
@@ -121,11 +143,11 @@ jobs:
             sed -i "s|\${CONSUMER_ROLE_ARN}|${CONSUMER_ROLE_ARN}|g" consumer/deployment.yaml
           fi
           
-          # Update image tags with commit SHA (Linux sed)
+          # Update image tags per service (Linux sed)
           sed -i "s|\${ECR_REGISTRY}|${ECR_REGISTRY}|g" inference/deployment.yaml
           sed -i "s|\${ECR_REGISTRY}|${ECR_REGISTRY}|g" consumer/deployment.yaml
-          sed -i "s|:latest|:${IMAGE_TAG}|g" inference/deployment.yaml
-          sed -i "s|:latest|:${IMAGE_TAG}|g" consumer/deployment.yaml
+          sed -i "s|:latest|:${INFERENCE_TAG}|g" inference/deployment.yaml
+          sed -i "s|:latest|:${CONSUMER_TAG}|g" consumer/deployment.yaml
           
           # Apply Kubernetes manifests - new image tag triggers automatic pod restart
           kubectl apply -f inference/deployment.yaml
@@ -159,7 +181,7 @@ jobs:
       - name: Deploy producer to EC2
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
+          PRODUCER_TAG: ${{ steps.check-images.outputs.producer_tag }}
         run: |
           # Get EC2 instance ID for RTSP server (runs producer)
           INSTANCE_ID=$(aws ec2 describe-instances \
@@ -175,10 +197,10 @@ jobs:
               --document-name "AWS-RunShellScript" \
               --parameters "commands=[
                 'aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${ECR_REGISTRY}',
-                'docker pull ${ECR_REGISTRY}/video-pipeline/producer:${IMAGE_TAG}',
+                'docker pull ${ECR_REGISTRY}/video-pipeline/producer:${PRODUCER_TAG}',
                 'docker stop producer || true',
                 'docker rm producer || true',
-                'docker run -d --name producer --network host -e KAFKA_BOOTSTRAP_SERVERS=\$(aws kafka get-bootstrap-brokers --cluster-arn \$(aws kafka list-clusters --query ClusterInfoList[0].ClusterArn --output text) --query BootstrapBrokerString --output text) -e RTSP_URL=rtsp://localhost:8554/stream ${ECR_REGISTRY}/video-pipeline/producer:${IMAGE_TAG}'
+                'docker run -d --name producer --network host -e KAFKA_BOOTSTRAP_SERVERS=\$(aws kafka get-bootstrap-brokers --cluster-arn \$(aws kafka list-clusters --query ClusterInfoList[0].ClusterArn --output text) --query BootstrapBrokerString --output text) -e RTSP_URL=rtsp://localhost:8554/stream ${ECR_REGISTRY}/video-pipeline/producer:${PRODUCER_TAG}'
               ]" \
               --output text
             
