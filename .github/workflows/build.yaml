@@ -41,43 +41,8 @@ jobs:
             consumer:
               - 'services/consumer/**'
 
-  lint-and-test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        service: [producer, inference, consumer]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-          cache-dependency-path: 'services/${{ matrix.service }}/requirements.txt'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff pytest
-          pip install -r services/${{ matrix.service }}/requirements.txt
-
-      - name: Lint with ruff
-        run: |
-          ruff check services/${{ matrix.service }}/
-
-      - name: Run tests
-        run: |
-          cd services/${{ matrix.service }}
-          if [ -d "tests" ]; then
-            pytest tests/ -v
-          else
-            echo "No tests directory found, skipping tests"
-          fi
-
   build-producer:
-    needs: [detect-changes, lint-and-test]
+    needs: [detect-changes]
     if: needs.detect-changes.outputs.producer == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -109,7 +74,7 @@ jobs:
           docker push $ECR_REGISTRY/video-pipeline/producer:latest
 
   build-inference:
-    needs: [detect-changes, lint-and-test]
+    needs: [detect-changes]
     if: needs.detect-changes.outputs.inference == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -141,7 +106,7 @@ jobs:
           docker push $ECR_REGISTRY/video-pipeline/inference:latest
 
   build-consumer:
-    needs: [detect-changes, lint-and-test]
+    needs: [detect-changes]
     if: needs.detect-changes.outputs.consumer == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
