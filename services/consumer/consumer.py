@@ -408,7 +408,7 @@ class FrameProcessor:
         self.stop()
 
     def stop(self):
-        """Stop the consumer and cleanup"""
+        """Stop the consumer and cleanup."""
         self.running = False
         
         # Process remaining batch
