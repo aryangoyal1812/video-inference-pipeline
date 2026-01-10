@@ -54,22 +54,21 @@ jobs:
         run: |
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
-      - name: Get Terraform outputs
+      - name: Get AWS resource values
         id: tf-outputs
         run: |
-          cd terraform
-          terraform init -backend=false
-          
-          # Get MSK bootstrap servers and S3 bucket from AWS
+          # Get MSK bootstrap servers
           MSK_CLUSTER_ARN=$(aws kafka list-clusters --query 'ClusterInfoList[?ClusterName==`video-pipeline-kafka`].ClusterArn' --output text)
           if [ -n "$MSK_CLUSTER_ARN" ]; then
             KAFKA_BOOTSTRAP=$(aws kafka get-bootstrap-brokers --cluster-arn $MSK_CLUSTER_ARN --query 'BootstrapBrokerString' --output text)
             echo "kafka_bootstrap=$KAFKA_BOOTSTRAP" >> $GITHUB_OUTPUT
           fi
           
+          # Get S3 bucket
           S3_BUCKET=$(aws s3api list-buckets --query 'Buckets[?starts_with(Name, `video-pipeline-output`)].Name' --output text | head -1)
           echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
           
+          # Get consumer IAM role
           CONSUMER_ROLE_ARN=$(aws iam get-role --role-name video-pipeline-consumer-pod --query 'Role.Arn' --output text 2>/dev/null || echo "")
           echo "consumer_role_arn=$CONSUMER_ROLE_ARN" >> $GITHUB_OUTPUT
 
