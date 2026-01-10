@@ -107,9 +107,10 @@ message.max.bytes=10485760          # 10MB max (for frame batches)
 
 | Setting | Value | Notes |
 |---------|-------|-------|
-| **Cluster Version** | 1.28 | Kubernetes version |
-| **Node Instance Type** | `t3.medium` | 2 vCPU, 4GB RAM |
-| **Node Group Size** | Min: 1, Desired: 2, Max: 5 | Autoscaling enabled |
+| **Cluster Version** | 1.31 | Kubernetes version (1.28 deprecated) |
+| **Node Instance Type** | `t3.small` | 2 vCPU, 2GB RAM (cost-optimized) |
+| **Node Group Name** | `vp-nodes` | Short name to avoid IAM length limits |
+| **Node Group Size** | Min: 1, Desired: 1, Max: 5 | Autoscaling enabled |
 | **IRSA** | Enabled | Secure pod IAM access |
 
 **Cluster Addons:**
@@ -185,11 +186,13 @@ INFERENCE_CONFIDENCE_THRESHOLD: "0.5"
 
 | Aspect | Configuration |
 |--------|---------------|
-| **Replicas** | 2 (HPA scales 2-10) |
+| **Replicas** | 1 (HPA scales 1-5) |
 | **Image** | YOLOv8n model with FastAPI |
-| **Resources** | Requests: 500m CPU, 1Gi RAM / Limits: 2 CPU, 2Gi RAM |
+| **Resources** | Requests: 250m CPU, 512Mi RAM / Limits: 1 CPU, 1Gi RAM |
 | **Probes** | Liveness: `/health`, Readiness: `/ready` |
 | **Service Type** | ClusterIP (internal only) |
+
+> **Note:** Resource limits are optimized for `t3.small` nodes (2GB RAM). Increase if using larger instances.
 
 ### Consumer Deployment
 
@@ -197,7 +200,7 @@ INFERENCE_CONFIDENCE_THRESHOLD: "0.5"
 |--------|---------------|
 | **Replicas** | 1 |
 | **Service Account** | `consumer-sa` with IRSA annotation |
-| **Resources** | Requests: 250m CPU, 512Mi RAM / Limits: 1 CPU, 1Gi RAM |
+| **Resources** | Requests: 100m CPU, 256Mi RAM / Limits: 500m CPU, 512Mi RAM |
 
 ### Horizontal Pod Autoscaler (HPA)
 
@@ -212,13 +215,16 @@ metrics:
         averageUtilization: 70
 ```
 
-**BONUS: KEDA Kafka Lag Autoscaling:**
+**BONUS: KEDA Kafka Lag Autoscaling (Optional):**
 ```yaml
+# Requires KEDA installation
 triggers:
   - type: kafka
     metadata:
       lagThreshold: "100"  # Scale when lag > 100 messages
 ```
+
+> **Note:** KEDA is optional. The standard Kubernetes HPA provides CPU/memory-based autoscaling without KEDA.
 
 ---
 
@@ -286,13 +292,13 @@ triggers:
 | Service | Configuration | Estimated Cost |
 |---------|---------------|----------------|
 | **EKS Control Plane** | Fixed | $72/month |
-| **EC2 Nodes** | 2x t3.medium | ~$60/month |
+| **EC2 Nodes** | 1x t3.small | ~$15/month |
 | **MSK** | 2x kafka.t3.small | ~$80/month |
 | **EC2 RTSP** | 1x t3.micro | ~$8/month |
 | **NAT Gateway** | 1x | ~$32/month |
 | **Data Transfer** | Variable | ~$10/month |
 | **S3** | Minimal | ~$1/month |
-| **Total Running** | | **~$263/month** |
+| **Total Running** | | **~$218/month** |
 
 ### Strategy 1: Scale to Zero (Recommended for Testing)
 
@@ -334,17 +340,17 @@ aws ec2 start-instances --instance-ids $INSTANCE_ID
 ### Strategy 3: Scale Down EKS Node Group
 
 ```bash
-# Scale node group to 0 (saves ~$60/month)
+# Scale node group to 0 (saves ~$15/month)
 aws eks update-nodegroup-config \
   --cluster-name video-pipeline-cluster \
-  --nodegroup-name video-pipeline-node-group \
+  --nodegroup-name vp-nodes \
   --scaling-config minSize=0,maxSize=5,desiredSize=0
 
 # Scale back up
 aws eks update-nodegroup-config \
   --cluster-name video-pipeline-cluster \
-  --nodegroup-name video-pipeline-node-group \
-  --scaling-config minSize=1,maxSize=5,desiredSize=2
+  --nodegroup-name vp-nodes \
+  --scaling-config minSize=1,maxSize=5,desiredSize=1
 ```
 
 ### Strategy 4: Use Spot Instances (Production)
@@ -376,7 +382,7 @@ def handler(event, context):
     # Scale node group to 0
     eks.update_nodegroup_config(
         clusterName='video-pipeline-cluster',
-        nodegroupName='video-pipeline-node-group',
+        nodegroupName='vp-nodes',
         scalingConfig={'minSize': 0, 'maxSize': 5, 'desiredSize': 0}
     )
     
@@ -406,12 +412,14 @@ def handler(event, context):
 
 To minimize costs when not actively testing:
 
-1. **Scale EKS nodes to 0** → Saves $60/month
-2. **Stop RTSP EC2** → Saves $8/month
+1. **Scale EKS nodes to 0** → Saves ~$15/month
+2. **Stop RTSP EC2** → Saves ~$8/month
 3. Keep MSK running (required for pipeline)
 4. EKS control plane must stay running
 
 **Absolute minimum:** ~$184/month (EKS control plane + MSK + NAT Gateway)
+
+> **Tip:** Use `./scripts/aws-manage.sh scale-down` to automate scaling down all resources.
 
 ---
 
@@ -422,6 +430,9 @@ To minimize costs when not actively testing:
 ```bash
 cd terraform
 
+# Generate SSH key for RTSP server (if not exists)
+ssh-keygen -t rsa -b 4096 -f rtsp-key -N "" -C "rtsp-server"
+
 # Initialize
 terraform init
 
@@ -431,6 +442,8 @@ terraform plan
 # Deploy (takes ~20-30 minutes for MSK)
 terraform apply
 ```
+
+> **Note:** If you get a Kubernetes provider error about `aws-auth` ConfigMap, the EKS cluster may not be fully ready. Wait a minute and run `terraform apply` again.
 
 **Save the outputs:**
 ```bash
@@ -489,11 +502,12 @@ kubectl create secret generic video-pipeline-secrets \
 kubectl apply -f k8s/configmap.yaml
 
 # Update deployment files with actual values
-sed -i "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" k8s/inference/deployment.yaml
-sed -i "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" k8s/consumer/deployment.yaml
-sed -i "s|\${CONSUMER_ROLE_ARN}|$CONSUMER_ROLE_ARN|g" k8s/consumer/deployment.yaml
+sed -i '' "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" k8s/inference/deployment.yaml
+sed -i '' "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" k8s/consumer/deployment.yaml
+sed -i '' "s|\${CONSUMER_ROLE_ARN}|$CONSUMER_ROLE_ARN|g" k8s/consumer/deployment.yaml
 
 # Deploy
+kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.13.0/keda-2.13.0.yaml
 kubectl apply -f k8s/inference/
 kubectl apply -f k8s/consumer/
 
@@ -552,8 +566,13 @@ aws ec2 stop-instances --instance-ids $INSTANCE_ID
 # Scale down node group
 aws eks update-nodegroup-config \
   --cluster-name video-pipeline-cluster \
-  --nodegroup-name video-pipeline-node-group \
+  --nodegroup-name vp-nodes \
   --scaling-config minSize=0,maxSize=5,desiredSize=0
+```
+
+**Or use the helper script:**
+```bash
+./scripts/aws-manage.sh scale-down
 ```
 
 ---
@@ -604,12 +623,71 @@ kubectl describe pod <pod-name> -n video-pipeline
 # - Probe failures: Check service health endpoints
 ```
 
+### ImagePullBackOff Error
+
+The image doesn't exist in ECR. Build and push it:
+```bash
+ECR_REGISTRY="<your-account-id>.dkr.ecr.us-east-1.amazonaws.com"
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $ECR_REGISTRY
+docker build -t $ECR_REGISTRY/video-pipeline/inference:latest services/inference/
+docker push $ECR_REGISTRY/video-pipeline/inference:latest
+kubectl delete pod -n video-pipeline -l app=inference-service
+```
+
+### Insufficient Memory (Pods Pending)
+
+The `t3.small` node only has ~1.4GB allocatable memory. Solutions:
+```bash
+# Option 1: Scale to 1 replica each
+kubectl scale deployment inference-service -n video-pipeline --replicas=1
+kubectl scale deployment consumer -n video-pipeline --replicas=1
+
+# Option 2: Use larger instance (update terraform/variables.tf)
+# Change eks_node_instance_type to "t3.medium"
+```
+
+### EKS Version 1.28 Not Supported
+
+AWS deprecated older Kubernetes versions. Update `terraform/main.tf`:
+```hcl
+cluster_version = "1.31"  # Use latest supported version
+```
+Then destroy and recreate the EKS cluster.
+
+### Node Group Name Too Long Error
+
+IAM role name_prefix has a 38-character limit. Use short node group name:
+```hcl
+name = "vp-nodes"  # Instead of "video-pipeline-node-group"
+```
+
 ### Consumer Can't Connect to Kafka
 
 ```bash
 # Verify MSK security group allows traffic from EKS
 # Check that bootstrap servers are correct in secret
 kubectl get secret video-pipeline-secrets -n video-pipeline -o yaml
+```
+
+### macOS sed -i Error
+
+macOS uses BSD sed which requires a backup extension:
+```bash
+# Linux (GitHub Actions)
+sed -i "s|old|new|g" file.yaml
+
+# macOS
+sed -i '' "s|old|new|g" file.yaml
+```
+
+### KEDA ScaledObject Error
+
+KEDA is not installed by default. Either install it or ignore the error:
+```bash
+# Install KEDA (optional)
+kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.13.0/keda-2.13.0.yaml
+
+# Or ignore - the standard HPA still works
 ```
 
 ### No Detections in Output
@@ -637,7 +715,7 @@ terraform apply
 
 ```bash
 # Scale up pipeline
-kubectl scale deployment inference-service -n video-pipeline --replicas=2
+kubectl scale deployment inference-service -n video-pipeline --replicas=1
 kubectl scale deployment consumer -n video-pipeline --replicas=1
 
 # Scale down pipeline  
@@ -646,6 +724,12 @@ kubectl scale deployment consumer -n video-pipeline --replicas=0
 
 # View all resources
 kubectl get all -n video-pipeline
+
+# Use helper script
+./scripts/aws-manage.sh status      # Check status
+./scripts/aws-manage.sh scale-up    # Scale up all
+./scripts/aws-manage.sh scale-down  # Scale down all
+./scripts/aws-manage.sh test        # Quick health test
 
 # Destroy everything
 cd terraform && terraform destroy
@@ -674,15 +758,20 @@ The repository includes GitHub Actions workflows:
 Your pipeline is now ready for AWS deployment! The key points:
 
 1. **Infrastructure**: Terraform creates VPC, MSK, EKS, S3, EC2 in ~30 minutes
-2. **Kubernetes**: 2 deployments (inference + consumer) with autoscaling
+2. **Kubernetes**: 2 deployments (inference + consumer) with HPA autoscaling
 3. **Cost Control**: Scale to 0 replicas and stop EC2 when not testing
 4. **Minimum Idle Cost**: ~$184/month (EKS control plane + MSK + NAT)
-5. **Full Running Cost**: ~$263/month
+5. **Full Running Cost**: ~$218/month (with 1x t3.small node)
+
+**Key Configuration:**
+- EKS Kubernetes version: **1.31**
+- Node instance type: **t3.small** (2GB RAM)
+- Node group name: **vp-nodes**
 
 **Next Steps:**
 1. Run `terraform apply`
-2. Build and push images
+2. Build and push images to ECR
 3. Deploy to Kubernetes
 4. Validate the pipeline
-5. Scale down for cost savings
+5. Scale down for cost savings using `./scripts/aws-manage.sh scale-down`
 

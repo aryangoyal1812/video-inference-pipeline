@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/component: inference
     app.kubernetes.io/part-of: video-pipeline
 spec:
-  replicas: 2
+  replicas: 1  # Reduced for t3.small node
   selector:
     matchLabels:
       app: inference-service
@@ -25,7 +25,7 @@ spec:
     spec:
       containers:
         - name: inference
-          image: ${ECR_REGISTRY}/video-pipeline/inference:latest
+          image: 281789400082.dkr.ecr.us-east-1.amazonaws.com/video-pipeline/inference:latest
           imagePullPolicy: Always
           ports:
             - name: http
@@ -54,11 +54,11 @@ spec:
                   key: INFERENCE_MODEL_DEVICE
           resources:
             requests:
-              memory: "1Gi"
-              cpu: "500m"
+              memory: "512Mi"
+              cpu: "250m"
             limits:
-              memory: "2Gi"
-              cpu: "2000m"
+              memory: "1Gi"
+              cpu: "1000m"
           livenessProbe:
             httpGet:
               path: /health

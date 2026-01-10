@@ -40,6 +40,38 @@ resource "aws_iam_role_policy_attachment" "rtsp_ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+# Attach ECR read-only policy for pulling producer image
+resource "aws_iam_role_policy_attachment" "rtsp_ecr" {
+  role       = aws_iam_role.rtsp_server.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
+# Policy for RTSP server to access MSK and produce messages
+resource "aws_iam_role_policy" "rtsp_msk" {
+  name = "${local.name}-rtsp-msk-policy"
+  role = aws_iam_role.rtsp_server.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "kafka:ListClusters",
+          "kafka:GetBootstrapBrokers",
+          "kafka:DescribeCluster",
+          "kafka-cluster:Connect",
+          "kafka-cluster:DescribeCluster",
+          "kafka-cluster:WriteData",
+          "kafka-cluster:DescribeTopic",
+          "kafka-cluster:CreateTopic"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # Instance profile
 resource "aws_iam_instance_profile" "rtsp_server" {
   name = "${local.name}-rtsp-server"

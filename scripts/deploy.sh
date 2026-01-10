@@ -116,22 +116,35 @@ deploy_kubernetes() {
     # Apply ConfigMap
     kubectl apply -f k8s/configmap.yaml
     
-    # Update manifests with actual values
-    sed -i.bak "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" k8s/inference/deployment.yaml
-    sed -i.bak "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" k8s/consumer/deployment.yaml
-    sed -i.bak "s|\${CONSUMER_ROLE_ARN}|$CONSUMER_ROLE_ARN|g" k8s/consumer/deployment.yaml
+    # Create temporary copies for modification
+    cp k8s/inference/deployment.yaml k8s/inference/deployment.yaml.tmp
+    cp k8s/consumer/deployment.yaml k8s/consumer/deployment.yaml.tmp
     
-    # Deploy services
-    kubectl apply -f k8s/inference/
-    kubectl apply -f k8s/consumer/
+    # Update manifests with actual values (works on both macOS and Linux)
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        sed -i '' "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" k8s/inference/deployment.yaml.tmp
+        sed -i '' "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" k8s/consumer/deployment.yaml.tmp
+        sed -i '' "s|\${CONSUMER_ROLE_ARN}|$CONSUMER_ROLE_ARN|g" k8s/consumer/deployment.yaml.tmp
+    else
+        # Linux
+        sed -i "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" k8s/inference/deployment.yaml.tmp
+        sed -i "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" k8s/consumer/deployment.yaml.tmp
+        sed -i "s|\${CONSUMER_ROLE_ARN}|$CONSUMER_ROLE_ARN|g" k8s/consumer/deployment.yaml.tmp
+    fi
     
-    # Restore original files
-    mv k8s/inference/deployment.yaml.bak k8s/inference/deployment.yaml
-    mv k8s/consumer/deployment.yaml.bak k8s/consumer/deployment.yaml
+    # Deploy services (skip KEDA ScaledObject if KEDA not installed)
+    kubectl apply -f k8s/inference/deployment.yaml.tmp
+    kubectl apply -f k8s/inference/service.yaml
+    kubectl apply -f k8s/inference/hpa.yaml 2>/dev/null || log_warn "KEDA not installed, skipping ScaledObject"
+    kubectl apply -f k8s/consumer/deployment.yaml.tmp
+    
+    # Clean up temp files
+    rm -f k8s/inference/deployment.yaml.tmp k8s/consumer/deployment.yaml.tmp
     
     log_info "Waiting for deployments..."
-    kubectl rollout status deployment/inference-service -n video-pipeline --timeout=300s
-    kubectl rollout status deployment/consumer -n video-pipeline --timeout=300s
+    kubectl rollout status deployment/inference-service -n video-pipeline --timeout=300s || true
+    kubectl rollout status deployment/consumer -n video-pipeline --timeout=300s || true
     
     log_info "Kubernetes deployment complete!"
 }
@@ -163,8 +176,11 @@ show_status() {
     echo "# View consumer logs:"
     echo "kubectl logs -f deployment/consumer -n video-pipeline"
     echo ""
-    echo "# Start producer (on EC2 or locally):"
-    echo "python services/producer/producer.py --rtsp-url rtsp://<RTSP_SERVER_IP>:8554/stream --kafka-bootstrap $KAFKA_BOOTSTRAP"
+    echo "# Scale down to save costs:"
+    echo "./scripts/aws-manage.sh scale-down"
+    echo ""
+    echo "# Check status:"
+    echo "./scripts/aws-manage.sh status"
 }
 
 main() {

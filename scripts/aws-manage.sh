@@ -14,8 +14,15 @@ NC='\033[0m' # No Color
 # Configuration
 AWS_REGION="${AWS_REGION:-us-east-1}"
 CLUSTER_NAME="video-pipeline-cluster"
-NODE_GROUP_NAME="vp-nodes"
 NAMESPACE="video-pipeline"
+
+# Get the node group name dynamically (handles name with timestamp suffix)
+get_node_group_name() {
+    aws eks list-nodegroups --cluster-name $CLUSTER_NAME --region $AWS_REGION \
+        --query 'nodegroups[0]' --output text 2>/dev/null || echo "vp-nodes"
+}
+
+NODE_GROUP_NAME=$(get_node_group_name)
 
 log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -115,13 +122,14 @@ show_status() {
     echo -e "\n💰 Estimated Running Costs:"
     echo "   EKS Control Plane:  \$72/month (always on)"
     echo "   MSK Cluster:        \$80/month (always on)"
+    echo "   NAT Gateway:        \$32/month (always on)"
     if [ "$STATE" = "running" ]; then
         echo "   EC2 RTSP:           ~\$8/month"
     else
         echo "   EC2 RTSP:           \$0 (stopped)"
     fi
     if [ "$NODE_COUNT" -gt 0 ] 2>/dev/null; then
-        echo "   EKS Nodes:          ~\$30/node/month"
+        echo "   EKS Nodes:          ~\$15/node/month (t3.small)"
     else
         echo "   EKS Nodes:          \$0 (scaled down)"
     fi
@@ -148,7 +156,7 @@ scale_up_nodes() {
     aws eks update-nodegroup-config \
         --cluster-name $CLUSTER_NAME \
         --nodegroup-name $NODE_GROUP_NAME \
-        --scaling-config minSize=1,maxSize=5,desiredSize=2 \
+        --scaling-config minSize=1,maxSize=5,desiredSize=1 \
         --region $AWS_REGION
     
     log_info "Node group scaling initiated. Waiting for nodes..."
@@ -171,10 +179,11 @@ scale_up_deployments() {
     # Update kubeconfig first
     aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION &>/dev/null
     
-    kubectl scale deployment inference-service -n $NAMESPACE --replicas=2 2>/dev/null || true
+    # Using 1 replica for t3.small nodes (limited memory)
+    kubectl scale deployment inference-service -n $NAMESPACE --replicas=1 2>/dev/null || true
     kubectl scale deployment consumer -n $NAMESPACE --replicas=1 2>/dev/null || true
     
-    log_info "Deployments scaled up"
+    log_info "Deployments scaled up (1 replica each for t3.small)"
 }
 
 start_rtsp() {
@@ -256,6 +265,41 @@ stop_rtsp() {
     else
         log_error "RTSP instance not found"
     fi
+}
+
+# ============================================
+# BUILD AND PUSH IMAGES
+# ============================================
+
+build_and_push() {
+    log_section "Building and Pushing Docker Images"
+    
+    # Get ECR registry
+    ECR_REGISTRY=$(aws ecr describe-repositories --query 'repositories[0].repositoryUri' \
+        --output text --region $AWS_REGION | cut -d'/' -f1)
+    
+    if [ -z "$ECR_REGISTRY" ]; then
+        log_error "No ECR repositories found. Run terraform apply first."
+        exit 1
+    fi
+    
+    log_info "ECR Registry: $ECR_REGISTRY"
+    
+    # Login to ECR
+    log_info "Logging into ECR..."
+    aws ecr get-login-password --region $AWS_REGION | \
+        docker login --username AWS --password-stdin $ECR_REGISTRY
+    
+    # Build and push each service
+    for service in producer inference consumer; do
+        log_info "Building $service..."
+        docker build -t $ECR_REGISTRY/video-pipeline/$service:latest services/$service/
+        
+        log_info "Pushing $service..."
+        docker push $ECR_REGISTRY/video-pipeline/$service:latest
+    done
+    
+    log_info "All images pushed successfully!"
 }
 
 # ============================================
@@ -361,6 +405,7 @@ show_help() {
     echo ""
     echo "Commands:"
     echo "  status              Show status of all AWS resources"
+    echo "  build               Build and push Docker images to ECR"
     echo ""
     echo "  scale-up            Scale up all resources (nodes, deployments, EC2)"
     echo "  scale-up-nodes      Scale up EKS node group only"
@@ -379,15 +424,18 @@ show_help() {
     echo "  destroy             Destroy all AWS resources (DANGEROUS!)"
     echo ""
     echo "Cost Saving Tips:"
-    echo "  - Run '$0 scale-down' when not testing to save ~\$80/month"
+    echo "  - Run '$0 scale-down' when not testing to save ~\$35/month"
     echo "  - Minimum idle cost: ~\$184/month (EKS control + MSK + NAT)"
-    echo "  - Full running cost: ~\$263/month"
+    echo "  - Full running cost: ~\$218/month (with 1x t3.small)"
 }
 
 main() {
     case "${1:-}" in
         status)
             show_status
+            ;;
+        build)
+            build_and_push
             ;;
         scale-up)
             scale_up_all

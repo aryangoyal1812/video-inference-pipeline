@@ -37,7 +37,7 @@ variable "kafka_broker_count" {
 variable "eks_node_instance_type" {
   description = "Instance type for EKS worker nodes"
   type        = string
-  default     = "t3.medium"
+  default     = "t3.small"  # Changed from t3.medium due to account restrictions
 }
 
 variable "eks_node_min_size" {
@@ -55,7 +55,7 @@ variable "eks_node_max_size" {
 variable "eks_node_desired_size" {
   description = "Desired number of EKS worker nodes"
   type        = number
-  default     = 2
+  default     = 1  # Reduced to 1 to minimize costs
 }
 
 variable "rtsp_instance_type" {

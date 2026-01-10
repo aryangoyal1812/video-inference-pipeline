@@ -7,7 +7,7 @@ metadata:
     app: consumer
   annotations:
     # This annotation will be replaced with the actual role ARN from Terraform output
-    eks.amazonaws.com/role-arn: ${CONSUMER_ROLE_ARN}
+    eks.amazonaws.com/role-arn: arn:aws:iam::281789400082:role/video-pipeline-consumer-pod
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -33,7 +33,7 @@ spec:
       serviceAccountName: consumer-sa
       containers:
         - name: consumer
-          image: ${ECR_REGISTRY}/video-pipeline/consumer:latest
+          image: 281789400082.dkr.ecr.us-east-1.amazonaws.com/video-pipeline/consumer:latest
           imagePullPolicy: Always
           env:
             # Kafka configuration
@@ -94,11 +94,11 @@ spec:
                   key: BATCH_TIMEOUT_SECONDS
           resources:
             requests:
-              memory: "512Mi"
-              cpu: "250m"
+              memory: "256Mi"
+              cpu: "100m"
             limits:
-              memory: "1Gi"
-              cpu: "1000m"
+              memory: "512Mi"
+              cpu: "500m"
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000

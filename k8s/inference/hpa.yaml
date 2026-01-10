@@ -12,8 +12,8 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: inference-service
-  minReplicas: 2
-  maxReplicas: 10
+  minReplicas: 1  # Reduced for t3.small node
+  maxReplicas: 5
   metrics:
     - type: Resource
       resource:
