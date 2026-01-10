@@ -27,7 +27,7 @@ from pydantic_settings import BaseSettings
 from starlette.responses import Response
 from ultralytics import YOLO
 
-# Configure standard logging first (required for structlog filter_by_level)
+# Configure standard logging first (required for structlog filter_by_level).
 logging.basicConfig(
     format="%(message)s",
     stream=sys.stdout,
