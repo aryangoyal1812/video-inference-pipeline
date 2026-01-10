@@ -1,6 +1,15 @@
 terraform {
   required_version = ">= 1.0"
 
+  # Remote backend for shared state (local + CI/CD)
+  backend "s3" {
+    bucket         = "video-pipeline-terraform-state-281789400082"
+    key            = "terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "video-pipeline-terraform-locks"
+    encrypt        = true
+  }
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
