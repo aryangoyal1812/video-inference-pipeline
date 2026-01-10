@@ -202,12 +202,132 @@ start_rtsp() {
             IP=$(aws ec2 describe-instances --instance-ids $INSTANCE_ID \
                 --query 'Reservations[].Instances[].PublicIpAddress' --output text --region $AWS_REGION)
             log_info "RTSP instance running at: $IP"
+            
+            # Wait for SSM agent to be ready
+            log_info "Waiting for SSM agent..."
+            sleep 30
+            
+            # Start RTSP containers
+            start_rtsp_containers
         else
             log_warn "RTSP instance already in state: $STATE"
         fi
     else
         log_error "RTSP instance not found"
     fi
+}
+
+start_rtsp_containers() {
+    log_info "Starting RTSP containers (MediaMTX + FFmpeg)..."
+    
+    INSTANCE_ID=$(get_rtsp_instance_id)
+    if [ -z "$INSTANCE_ID" ]; then
+        log_error "RTSP instance not found"
+        return 1
+    fi
+    
+    STATE=$(get_rtsp_instance_state)
+    if [ "$STATE" != "running" ]; then
+        log_error "RTSP instance is not running (state: $STATE)"
+        return 1
+    fi
+    
+    # Start MediaMTX and FFmpeg via SSM
+    COMMAND_ID=$(aws ssm send-command \
+        --instance-ids "$INSTANCE_ID" \
+        --document-name "AWS-RunShellScript" \
+        --parameters 'commands=[
+            "docker start mediamtx 2>/dev/null || docker run -d --name mediamtx --network host bluenviron/mediamtx:latest",
+            "sleep 3",
+            "docker start ffmpeg-streamer 2>/dev/null || docker run -d --name ffmpeg-streamer --network host -v /home/ec2-user/video:/media linuxserver/ffmpeg -re -stream_loop -1 -i /media/video.mp4 -c copy -f rtsp rtsp://localhost:8554/stream",
+            "sleep 2",
+            "docker ps --format \"table {{.Names}}\t{{.Status}}\""
+        ]' \
+        --region $AWS_REGION \
+        --output text \
+        --query 'Command.CommandId')
+    
+    log_info "Waiting for containers to start..."
+    sleep 10
+    
+    # Get command output
+    aws ssm get-command-invocation \
+        --command-id "$COMMAND_ID" \
+        --instance-id "$INSTANCE_ID" \
+        --region $AWS_REGION \
+        --query 'StandardOutputContent' \
+        --output text 2>/dev/null || log_warn "Could not get command output"
+    
+    log_info "RTSP containers started"
+}
+
+start_producer() {
+    log_info "Starting producer container on EC2..."
+    
+    INSTANCE_ID=$(get_rtsp_instance_id)
+    if [ -z "$INSTANCE_ID" ]; then
+        log_error "RTSP instance not found"
+        return 1
+    fi
+    
+    STATE=$(get_rtsp_instance_state)
+    if [ "$STATE" != "running" ]; then
+        log_error "RTSP instance is not running (state: $STATE)"
+        return 1
+    fi
+    
+    # Get ECR registry
+    ECR_REGISTRY="281789400082.dkr.ecr.${AWS_REGION}.amazonaws.com"
+    
+    # Start producer via SSM
+    COMMAND_ID=$(aws ssm send-command \
+        --instance-ids "$INSTANCE_ID" \
+        --document-name "AWS-RunShellScript" \
+        --parameters "commands=[
+            'docker rm -f producer 2>/dev/null || true',
+            'aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}',
+            'KAFKA_BOOTSTRAP=\$(aws kafka get-bootstrap-brokers --cluster-arn \$(aws kafka list-clusters --region ${AWS_REGION} --query ClusterInfoList[0].ClusterArn --output text) --region ${AWS_REGION} --query BootstrapBrokerString --output text)',
+            'echo \"Kafka bootstrap: \$KAFKA_BOOTSTRAP\"',
+            'docker run -d --name producer --network host -e KAFKA_BOOTSTRAP_SERVERS=\$KAFKA_BOOTSTRAP -e RTSP_URL=rtsp://localhost:8554/stream ${ECR_REGISTRY}/video-pipeline/producer:latest',
+            'sleep 3',
+            'docker ps --format \"table {{.Names}}\t{{.Status}}\" | grep -E \"NAMES|producer\"'
+        ]" \
+        --region $AWS_REGION \
+        --output text \
+        --query 'Command.CommandId')
+    
+    log_info "Waiting for producer to start..."
+    sleep 15
+    
+    # Get command output
+    OUTPUT=$(aws ssm get-command-invocation \
+        --command-id "$COMMAND_ID" \
+        --instance-id "$INSTANCE_ID" \
+        --region $AWS_REGION \
+        --query 'StandardOutputContent' \
+        --output text 2>/dev/null)
+    
+    echo "$OUTPUT"
+    log_info "Producer container started"
+}
+
+stop_producer() {
+    log_info "Stopping producer container..."
+    
+    INSTANCE_ID=$(get_rtsp_instance_id)
+    if [ -z "$INSTANCE_ID" ]; then
+        log_error "RTSP instance not found"
+        return 1
+    fi
+    
+    aws ssm send-command \
+        --instance-ids "$INSTANCE_ID" \
+        --document-name "AWS-RunShellScript" \
+        --parameters 'commands=["docker stop producer && docker rm producer"]' \
+        --region $AWS_REGION \
+        --output text > /dev/null
+    
+    log_info "Producer stopped"
 }
 
 # ============================================
@@ -407,10 +527,13 @@ show_help() {
     echo "  status              Show status of all AWS resources"
     echo "  build               Build and push Docker images to ECR"
     echo ""
-    echo "  scale-up            Scale up all resources (nodes, deployments, EC2)"
+    echo "  scale-up            Scale up all resources (nodes, deployments, EC2 + containers)"
     echo "  scale-up-nodes      Scale up EKS node group only"
     echo "  scale-up-k8s        Scale up K8s deployments only"
-    echo "  start-rtsp          Start RTSP EC2 instance"
+    echo "  start-rtsp          Start RTSP EC2 instance + MediaMTX/FFmpeg containers"
+    echo "  start-containers    Start MediaMTX + FFmpeg containers (EC2 must be running)"
+    echo "  start-producer      Start producer container on EC2"
+    echo "  stop-producer       Stop producer container on EC2"
     echo ""
     echo "  scale-down          Scale down all resources (cost saving mode)"
     echo "  scale-down-nodes    Scale down EKS node group to 0"
@@ -448,6 +571,15 @@ main() {
             ;;
         start-rtsp)
             start_rtsp
+            ;;
+        start-containers)
+            start_rtsp_containers
+            ;;
+        start-producer)
+            start_producer
+            ;;
+        stop-producer)
+            stop_producer
             ;;
         scale-down)
             scale_down_all
