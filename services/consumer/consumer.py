@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# Configure standard logging first (required for structlog filter_by_level)
+# Configure standard logging first (required for structlog filter_by_level).
 logging.basicConfig(
     format="%(message)s",
     stream=sys.stdout,

@@ -548,6 +548,15 @@ docker run -it --rm \
   -e RTSP_URL=rtsp://localhost:8554/stream \
   -e KAFKA_BOOTSTRAP_SERVERS=<MSK_BOOTSTRAP> \
   $ECR_REGISTRY/video-pipeline/producer:latest
+
+  #OR
+  ./scripts/aws-manage.sh connect-rtsp
+
+  docker run -it --rm --network host \
+  -e RTSP_URL="rtsp://localhost:8554/stream" \
+  -e KAFKA_BOOTSTRAP_SERVERS="b-1.videopipelinekafka.wwj3wq.c18.kafka.us-east-1.amazonaws.com:9092,b-2.videopipelinekafka.wwj3wq.c18.kafka.us-east-1.amazonaws.com:9092" \
+  -e KAFKA_TOPIC="video-frames" \
+  281789400082.dkr.ecr.us-east-1.amazonaws.com/video-pipeline/producer:latest
 ```
 
 ### Step 7: Scale Down for Cost Savings
