@@ -45,11 +45,12 @@ spec:
                   name: video-pipeline-secrets
                   key: KAFKA_BOOTSTRAP_SERVERS
                   optional: true
-            - name: KAFKA_TOPIC
+            # Multiple topics (comma-separated)
+            - name: KAFKA_TOPICS
               valueFrom:
                 configMapKeyRef:
                   name: video-pipeline-config
-                  key: KAFKA_TOPIC
+                  key: KAFKA_TOPICS
             - name: KAFKA_GROUP_ID
               valueFrom:
                 configMapKeyRef:
@@ -65,12 +66,19 @@ spec:
             - name: INFERENCE_SERVICE_URL
               value: "http://inference-service:8000"
             
-            # S3 configuration
-            - name: S3_BUCKET
+            # S3 configuration - Bucket 1 (for video-frames-1 topic)
+            - name: S3_BUCKET_1
               valueFrom:
                 secretKeyRef:
                   name: video-pipeline-secrets
-                  key: S3_BUCKET
+                  key: S3_BUCKET_1
+                  optional: true
+            # S3 configuration - Bucket 2 (for video-frames-2 topic)
+            - name: S3_BUCKET_2
+              valueFrom:
+                secretKeyRef:
+                  name: video-pipeline-secrets
+                  key: S3_BUCKET_2
                   optional: true
             - name: S3_PREFIX
               valueFrom:
@@ -108,4 +116,3 @@ spec:
             allowPrivilegeEscalation: false
       restartPolicy: Always
       terminationGracePeriodSeconds: 60
-

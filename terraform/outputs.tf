@@ -38,13 +38,28 @@ output "eks_cluster_certificate" {
 }
 
 output "s3_bucket_name" {
-  description = "S3 bucket name for annotated images"
+  description = "S3 bucket name for annotated images (stream 1)"
   value       = aws_s3_bucket.output.id
 }
 
 output "s3_bucket_arn" {
-  description = "S3 bucket ARN"
+  description = "S3 bucket ARN (stream 1)"
   value       = aws_s3_bucket.output.arn
+}
+
+output "s3_bucket_name_2" {
+  description = "S3 bucket name for annotated images (stream 2)"
+  value       = aws_s3_bucket.output_2.id
+}
+
+output "s3_bucket_arn_2" {
+  description = "S3 bucket ARN (stream 2)"
+  value       = aws_s3_bucket.output_2.arn
+}
+
+output "kafka_topics" {
+  description = "Kafka topics for video streams"
+  value       = var.kafka_topics
 }
 
 output "rtsp_server_public_ip" {
@@ -64,6 +79,11 @@ output "ecr_repository_urls" {
     inference = aws_ecr_repository.inference.repository_url
     consumer  = aws_ecr_repository.consumer.repository_url
   }
+}
+
+output "consumer_role_arn" {
+  description = "IAM role ARN for consumer pod"
+  value       = aws_iam_role.consumer_pod.arn
 }
 
 output "configure_kubectl" {

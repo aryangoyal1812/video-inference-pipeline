@@ -117,6 +117,7 @@ resource "aws_iam_role" "consumer_pod" {
 }
 
 # IAM Policy for Consumer Pod (S3 and MSK access)
+# Grants access to BOTH S3 buckets for dual-stream support
 resource "aws_iam_role_policy" "consumer_pod" {
   name = "${local.name}-consumer-policy"
   role = aws_iam_role.consumer_pod.id
@@ -133,8 +134,12 @@ resource "aws_iam_role_policy" "consumer_pod" {
           "s3:ListBucket"
         ]
         Resource = [
+          # Stream 1 bucket
           aws_s3_bucket.output.arn,
-          "${aws_s3_bucket.output.arn}/*"
+          "${aws_s3_bucket.output.arn}/*",
+          # Stream 2 bucket
+          aws_s3_bucket.output_2.arn,
+          "${aws_s3_bucket.output_2.arn}/*"
         ]
       },
       {

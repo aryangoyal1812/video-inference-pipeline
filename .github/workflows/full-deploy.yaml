@@ -1,0 +1,259 @@
+name: Full Stack Deploy
+
+# Manual trigger for full deployment (Infrastructure + Build + Deploy)
+# Use this for initial setup or when you need to deploy everything
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_terraform:
+        description: 'Deploy Terraform infrastructure'
+        required: true
+        default: true
+        type: boolean
+      build_images:
+        description: 'Build and push Docker images'
+        required: true
+        default: true
+        type: boolean
+      deploy_kubernetes:
+        description: 'Deploy to Kubernetes'
+        required: true
+        default: true
+        type: boolean
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: video-pipeline-cluster
+  KAFKA_TOPICS: "video-frames-1,video-frames-2"
+
+jobs:
+  # ============================================
+  # Stage 1: Terraform Infrastructure
+  # ============================================
+  terraform:
+    if: ${{ github.event.inputs.deploy_terraform == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      ecr_registry: ${{ steps.outputs.outputs.ecr_registry }}
+      s3_bucket_1: ${{ steps.outputs.outputs.s3_bucket_1 }}
+      s3_bucket_2: ${{ steps.outputs.outputs.s3_bucket_2 }}
+      kafka_bootstrap: ${{ steps.outputs.outputs.kafka_bootstrap }}
+      consumer_role_arn: ${{ steps.outputs.outputs.consumer_role_arn }}
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.0'
+          terraform_wrapper: false
+
+      - name: Create SSH key
+        run: |
+          if [ ! -f rtsp-key.pub ]; then
+            ssh-keygen -t rsa -b 4096 -f rtsp-key -N "" -C "rtsp-server"
+          fi
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
+
+      - name: Get Terraform outputs
+        id: outputs
+        run: |
+          echo "ecr_registry=$(terraform output -raw ecr_repository_urls | jq -r '.producer' | cut -d'/' -f1)" >> $GITHUB_OUTPUT
+          echo "s3_bucket_1=$(terraform output -raw s3_bucket_name)" >> $GITHUB_OUTPUT
+          echo "s3_bucket_2=$(terraform output -raw s3_bucket_name_2)" >> $GITHUB_OUTPUT
+          echo "consumer_role_arn=$(terraform output -raw consumer_role_arn)" >> $GITHUB_OUTPUT
+          
+          # Get Kafka bootstrap
+          MSK_ARN=$(aws kafka list-clusters --query 'ClusterInfoList[0].ClusterArn' --output text)
+          if [ -n "$MSK_ARN" ] && [ "$MSK_ARN" != "None" ]; then
+            KAFKA=$(aws kafka get-bootstrap-brokers --cluster-arn $MSK_ARN --query 'BootstrapBrokerString' --output text)
+            echo "kafka_bootstrap=$KAFKA" >> $GITHUB_OUTPUT
+          fi
+
+  # ============================================
+  # Stage 2: Build Docker Images
+  # ============================================
+  build:
+    # Run even if terraform was skipped, but only if build_images is true
+    needs: [terraform]
+    if: ${{ always() && (github.event.inputs.build_images == 'true') }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      matrix:
+        service: [producer, inference, consumer]
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push ${{ matrix.service }}
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/video-pipeline/${{ matrix.service }}:$IMAGE_TAG \
+                       -t $ECR_REGISTRY/video-pipeline/${{ matrix.service }}:latest \
+                       services/${{ matrix.service }}/
+          docker push $ECR_REGISTRY/video-pipeline/${{ matrix.service }}:$IMAGE_TAG
+          docker push $ECR_REGISTRY/video-pipeline/${{ matrix.service }}:latest
+
+  # ============================================
+  # Stage 3: Deploy to Kubernetes
+  # ============================================
+  deploy:
+    if: ${{ always() && (github.event.inputs.deploy_kubernetes == 'true') }}
+    needs: [terraform, build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Get AWS resources
+        id: resources
+        run: |
+          # MSK Bootstrap
+          MSK_ARN=$(aws kafka list-clusters --query 'ClusterInfoList[0].ClusterArn' --output text)
+          if [ -n "$MSK_ARN" ] && [ "$MSK_ARN" != "None" ]; then
+            KAFKA=$(aws kafka get-bootstrap-brokers --cluster-arn $MSK_ARN --query 'BootstrapBrokerString' --output text)
+            echo "kafka_bootstrap=$KAFKA" >> $GITHUB_OUTPUT
+          fi
+          
+          # S3 Buckets (dual-stream)
+          S3_1=$(aws s3api list-buckets --query 'Buckets[?starts_with(Name, `video-pipeline-output-1`)].Name' --output text | head -1)
+          S3_2=$(aws s3api list-buckets --query 'Buckets[?starts_with(Name, `video-pipeline-output-2`)].Name' --output text | head -1)
+          echo "s3_bucket_1=$S3_1" >> $GITHUB_OUTPUT
+          echo "s3_bucket_2=$S3_2" >> $GITHUB_OUTPUT
+          
+          # Consumer IAM role
+          ROLE_ARN=$(aws iam get-role --role-name video-pipeline-consumer-pod --query 'Role.Arn' --output text 2>/dev/null || echo "")
+          echo "consumer_role_arn=$ROLE_ARN" >> $GITHUB_OUTPUT
+
+      - name: Create namespace and secrets
+        env:
+          KAFKA_BOOTSTRAP: ${{ steps.resources.outputs.kafka_bootstrap }}
+          S3_BUCKET_1: ${{ steps.resources.outputs.s3_bucket_1 }}
+          S3_BUCKET_2: ${{ steps.resources.outputs.s3_bucket_2 }}
+        run: |
+          kubectl create namespace video-pipeline --dry-run=client -o yaml | kubectl apply -f -
+          
+          kubectl create secret generic video-pipeline-secrets \
+            --namespace video-pipeline \
+            --from-literal=KAFKA_BOOTSTRAP_SERVERS="${KAFKA_BOOTSTRAP}" \
+            --from-literal=S3_BUCKET_1="${S3_BUCKET_1}" \
+            --from-literal=S3_BUCKET_2="${S3_BUCKET_2}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy Kubernetes resources
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+          CONSUMER_ROLE_ARN: ${{ steps.resources.outputs.consumer_role_arn }}
+        run: |
+          cd k8s
+          
+          # Apply base manifests
+          kubectl apply -f namespace.yaml
+          kubectl apply -f configmap.yaml
+          
+          # Update and apply inference deployment
+          sed "s|\${ECR_REGISTRY}|${ECR_REGISTRY}|g; s|:latest|:${IMAGE_TAG}|g" inference/deployment.yaml > /tmp/inference-deploy.yaml
+          kubectl apply -f /tmp/inference-deploy.yaml
+          kubectl apply -f inference/service.yaml
+          kubectl apply -f inference/hpa.yaml || true
+          
+          # Update and apply consumer deployment
+          sed "s|\${ECR_REGISTRY}|${ECR_REGISTRY}|g; s|:latest|:${IMAGE_TAG}|g; s|\${CONSUMER_ROLE_ARN}|${CONSUMER_ROLE_ARN}|g" consumer/deployment.yaml > /tmp/consumer-deploy.yaml
+          kubectl apply -f /tmp/consumer-deploy.yaml
+
+      - name: Wait for deployments
+        run: |
+          kubectl rollout status deployment/inference-service -n video-pipeline --timeout=300s || true
+          kubectl rollout status deployment/consumer -n video-pipeline --timeout=300s || true
+
+      - name: Deploy producer to EC2
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+          KAFKA_BOOTSTRAP: ${{ steps.resources.outputs.kafka_bootstrap }}
+        run: |
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=*rtsp*" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' --output text)
+          
+          if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+            echo "Deploying producer to EC2: $INSTANCE_ID"
+            aws ssm send-command \
+              --instance-ids "$INSTANCE_ID" \
+              --document-name "AWS-RunShellScript" \
+              --parameters "commands=[
+                'aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${ECR_REGISTRY}',
+                'docker pull ${ECR_REGISTRY}/video-pipeline/producer:${IMAGE_TAG}',
+                'docker stop producer || true',
+                'docker rm producer || true',
+                'docker run -d --name producer --network host -e KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP} -e KAFKA_TOPICS=${KAFKA_TOPICS} -e RTSP_URL=rtsp://localhost:8554/stream ${ECR_REGISTRY}/video-pipeline/producer:${IMAGE_TAG}'
+              ]" \
+              --output text
+          fi
+
+      - name: Deployment Summary
+        run: |
+          echo "============================================"
+          echo "  DEPLOYMENT COMPLETE (Dual-Stream)"
+          echo "============================================"
+          echo ""
+          echo "Kafka Topics: ${KAFKA_TOPICS}"
+          echo ""
+          kubectl get deployments -n video-pipeline
+          echo ""
+          kubectl get pods -n video-pipeline
+

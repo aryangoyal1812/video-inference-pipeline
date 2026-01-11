@@ -65,8 +65,20 @@ variable "rtsp_instance_type" {
 }
 
 variable "s3_bucket_prefix" {
-  description = "Prefix for S3 bucket name"
+  description = "Prefix for S3 bucket name (stream 1)"
   type        = string
-  default     = "video-pipeline-output"
+  default     = "video-pipeline-output-1"
+}
+
+variable "s3_bucket_prefix_2" {
+  description = "Prefix for S3 bucket name (stream 2)"
+  type        = string
+  default     = "video-pipeline-output-2"
+}
+
+variable "kafka_topics" {
+  description = "List of Kafka topics for video streams"
+  type        = list(string)
+  default     = ["video-frames-1", "video-frames-2"]
 }
 

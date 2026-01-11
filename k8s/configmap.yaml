@@ -6,8 +6,8 @@ metadata:
   labels:
     app.kubernetes.io/name: video-pipeline
 data:
-  # Kafka configuration
-  KAFKA_TOPIC: "video-frames"
+  # Kafka configuration (dual-stream support)
+  KAFKA_TOPICS: "video-frames-1,video-frames-2"
   KAFKA_GROUP_ID: "frame-consumer-group"
   KAFKA_AUTO_OFFSET_RESET: "earliest"
   
@@ -38,6 +38,6 @@ type: Opaque
 stringData:
   # These will be populated during deployment
   # KAFKA_BOOTSTRAP_SERVERS: "placeholder"
-  # S3_BUCKET: "placeholder"
+  # S3_BUCKET_1: "placeholder"  # Bucket for stream 1 (video-frames-1)
+  # S3_BUCKET_2: "placeholder"  # Bucket for stream 2 (video-frames-2)
   placeholder: "replace-during-deployment"
-

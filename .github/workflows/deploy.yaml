@@ -26,6 +26,8 @@ on:
 env:
   AWS_REGION: us-east-1
   EKS_CLUSTER_NAME: video-pipeline-cluster
+  # Dual-stream Kafka topics
+  KAFKA_TOPICS: "video-frames-1,video-frames-2"
 
 jobs:
   deploy:
@@ -64,25 +66,35 @@ jobs:
             echo "kafka_bootstrap=$KAFKA_BOOTSTRAP" >> $GITHUB_OUTPUT
           fi
           
-          # Get S3 bucket
-          S3_BUCKET=$(aws s3api list-buckets --query 'Buckets[?starts_with(Name, `video-pipeline-output`)].Name' --output text | head -1)
-          echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
+          # Get BOTH S3 buckets for dual-stream support
+          # Bucket 1: video-pipeline-output-1-*
+          S3_BUCKET_1=$(aws s3api list-buckets --query 'Buckets[?starts_with(Name, `video-pipeline-output-1`)].Name' --output text | head -1)
+          echo "s3_bucket_1=$S3_BUCKET_1" >> $GITHUB_OUTPUT
+          
+          # Bucket 2: video-pipeline-output-2-*
+          S3_BUCKET_2=$(aws s3api list-buckets --query 'Buckets[?starts_with(Name, `video-pipeline-output-2`)].Name' --output text | head -1)
+          echo "s3_bucket_2=$S3_BUCKET_2" >> $GITHUB_OUTPUT
           
           # Get consumer IAM role
           CONSUMER_ROLE_ARN=$(aws iam get-role --role-name video-pipeline-consumer-pod --query 'Role.Arn' --output text 2>/dev/null || echo "")
           echo "consumer_role_arn=$CONSUMER_ROLE_ARN" >> $GITHUB_OUTPUT
+          
+          echo "Found S3 buckets: $S3_BUCKET_1, $S3_BUCKET_2"
 
       - name: Update secrets
         env:
           KAFKA_BOOTSTRAP: ${{ steps.tf-outputs.outputs.kafka_bootstrap }}
-          S3_BUCKET: ${{ steps.tf-outputs.outputs.s3_bucket }}
+          S3_BUCKET_1: ${{ steps.tf-outputs.outputs.s3_bucket_1 }}
+          S3_BUCKET_2: ${{ steps.tf-outputs.outputs.s3_bucket_2 }}
         run: |
           kubectl create namespace video-pipeline --dry-run=client -o yaml | kubectl apply -f -
           
+          # Create secrets with BOTH S3 buckets for dual-stream
           kubectl create secret generic video-pipeline-secrets \
             --namespace video-pipeline \
             --from-literal=KAFKA_BOOTSTRAP_SERVERS="${KAFKA_BOOTSTRAP}" \
-            --from-literal=S3_BUCKET="${S3_BUCKET}" \
+            --from-literal=S3_BUCKET_1="${S3_BUCKET_1}" \
+            --from-literal=S3_BUCKET_2="${S3_BUCKET_2}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Determine image tag
@@ -192,6 +204,7 @@ jobs:
             echo "Updating producer on EC2 instance: $INSTANCE_ID"
             
             # Use SSM to pull new image and restart producer container
+            # Producer publishes to BOTH Kafka topics for dual-stream
             aws ssm send-command \
               --instance-ids "$INSTANCE_ID" \
               --document-name "AWS-RunShellScript" \
@@ -200,11 +213,11 @@ jobs:
                 'docker pull ${ECR_REGISTRY}/video-pipeline/producer:${PRODUCER_TAG}',
                 'docker stop producer || true',
                 'docker rm producer || true',
-                'docker run -d --name producer --network host -e KAFKA_BOOTSTRAP_SERVERS=\$(aws kafka get-bootstrap-brokers --cluster-arn \$(aws kafka list-clusters --query ClusterInfoList[0].ClusterArn --output text) --query BootstrapBrokerString --output text) -e RTSP_URL=rtsp://localhost:8554/stream ${ECR_REGISTRY}/video-pipeline/producer:${PRODUCER_TAG}'
+                'docker run -d --name producer --network host -e KAFKA_BOOTSTRAP_SERVERS=\$(aws kafka get-bootstrap-brokers --cluster-arn \$(aws kafka list-clusters --query ClusterInfoList[0].ClusterArn --output text) --query BootstrapBrokerString --output text) -e KAFKA_TOPICS=${KAFKA_TOPICS} -e RTSP_URL=rtsp://localhost:8554/stream ${ECR_REGISTRY}/video-pipeline/producer:${PRODUCER_TAG}'
               ]" \
               --output text
             
-            echo "Producer deployment command sent to EC2"
+            echo "Producer deployment command sent to EC2 (dual-stream: ${KAFKA_TOPICS})"
           else
             echo "No running RTSP EC2 instance found - skipping producer deployment"
           fi

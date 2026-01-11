@@ -126,7 +126,19 @@ jobs:
       - name: Output Terraform Values
         if: github.event.inputs.action != 'destroy'
         run: |
-          echo "=== Terraform Outputs ==="
+          echo "=== Terraform Outputs (Dual-Stream Configuration) ==="
           terraform output -json > outputs.json
+          
+          echo ""
+          echo "S3 Buckets:"
+          echo "  Bucket 1 (video-frames-1): $(terraform output -raw s3_bucket_name 2>/dev/null || echo 'not created')"
+          echo "  Bucket 2 (video-frames-2): $(terraform output -raw s3_bucket_name_2 2>/dev/null || echo 'not created')"
+          
+          echo ""
+          echo "Kafka Topics:"
+          terraform output -raw kafka_topics 2>/dev/null || echo "video-frames-1, video-frames-2"
+          
+          echo ""
+          echo "Full outputs:"
           cat outputs.json
 
