@@ -1,6 +1,8 @@
 """
 Frame Producer: Captures frames from RTSP stream and publishes to Kafka.
 
+Supports publishing to multiple Kafka topics for dual-stream processing.
+
 Usage:
     python producer.py --rtsp-url rtsp://localhost:8554/stream --kafka-bootstrap localhost:9092
 """
@@ -13,7 +15,7 @@ import signal
 import sys
 import time
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 import cv2
 import logging
@@ -49,19 +51,19 @@ logger = structlog.get_logger(__name__)
 
 
 class FrameProducer:
-    """Captures frames from RTSP stream and publishes to Kafka."""
+    """Captures frames from RTSP stream and publishes to multiple Kafka topics."""
 
     def __init__(
         self,
         rtsp_url: str,
         kafka_bootstrap: str,
-        kafka_topic: str,
+        kafka_topics: List[str],
         frame_rate: int = 10,
         jpeg_quality: int = 85,
     ):
         self.rtsp_url = rtsp_url
         self.kafka_bootstrap = kafka_bootstrap
-        self.kafka_topic = kafka_topic
+        self.kafka_topics = kafka_topics
         self.frame_rate = frame_rate
         self.jpeg_quality = jpeg_quality
         self.running = False
@@ -73,7 +75,8 @@ class FrameProducer:
         logger.info(
             "FrameProducer initialized",
             rtsp_url=rtsp_url,
-            kafka_topic=kafka_topic,
+            kafka_topics=kafka_topics,
+            num_topics=len(kafka_topics),
             frame_rate=frame_rate,
             stream_id=self.stream_id,
         )
@@ -147,12 +150,12 @@ class FrameProducer:
             )
 
     def _publish_frame(self, frame: np.ndarray, timestamp: datetime):
-        """Publish a single frame to Kafka."""
+        """Publish a single frame to ALL configured Kafka topics."""
         try:
-            # Encode frame
+            # Encode frame once (shared across all topics)
             frame_b64 = self._encode_frame(frame)
             
-            # Create message payload
+            # Create message payload (same stream_id for all topics)
             message = {
                 "stream_id": self.stream_id,
                 "frame_number": self.frame_count,
@@ -165,13 +168,14 @@ class FrameProducer:
             # Serialize to JSON
             payload = json.dumps(message).encode("utf-8")
             
-            # Publish to Kafka
-            self.producer.produce(
-                topic=self.kafka_topic,
-                key=self.stream_id.encode("utf-8"),
-                value=payload,
-                callback=self._delivery_callback,
-            )
+            # Publish to ALL Kafka topics
+            for topic in self.kafka_topics:
+                self.producer.produce(
+                    topic=topic,
+                    key=self.stream_id.encode("utf-8"),
+                    value=payload,
+                    callback=self._delivery_callback,
+                )
             
             # Trigger any available delivery callbacks
             self.producer.poll(0)
@@ -183,6 +187,7 @@ class FrameProducer:
                     "Frames published",
                     frame_count=self.frame_count,
                     stream_id=self.stream_id,
+                    topics=self.kafka_topics,
                 )
                 
         except KafkaException as e:
@@ -220,7 +225,11 @@ class FrameProducer:
         frame_interval = 1.0 / self.frame_rate
         last_frame_time = 0
         
-        logger.info("Starting frame capture loop", frame_rate=self.frame_rate)
+        logger.info(
+            "Starting frame capture loop",
+            frame_rate=self.frame_rate,
+            topics=self.kafka_topics,
+        )
         
         while self.running:
             try:
@@ -273,7 +282,15 @@ class FrameProducer:
             "Producer stopped",
             total_frames=self.frame_count,
             stream_id=self.stream_id,
+            topics=self.kafka_topics,
         )
+
+
+def parse_topics(topics_str: str) -> List[str]:
+    """Parse comma-separated topics string into a list."""
+    if not topics_str:
+        return ["video-frames"]
+    return [t.strip() for t in topics_str.split(",") if t.strip()]
 
 
 def main():
@@ -291,10 +308,10 @@ def main():
         help="Kafka bootstrap servers",
     )
     parser.add_argument(
-        "--kafka-topic",
+        "--kafka-topics",
         type=str,
-        default=os.getenv("KAFKA_TOPIC", "video-frames"),
-        help="Kafka topic for frames",
+        default=os.getenv("KAFKA_TOPICS", os.getenv("KAFKA_TOPIC", "video-frames-1,video-frames-2")),
+        help="Comma-separated list of Kafka topics for frames",
     )
     parser.add_argument(
         "--frame-rate",
@@ -311,10 +328,20 @@ def main():
     
     args = parser.parse_args()
     
+    # Parse topics from comma-separated string
+    kafka_topics = parse_topics(args.kafka_topics)
+    
+    logger.info(
+        "Starting producer with configuration",
+        rtsp_url=args.rtsp_url,
+        kafka_bootstrap=args.kafka_bootstrap,
+        kafka_topics=kafka_topics,
+    )
+    
     producer = FrameProducer(
         rtsp_url=args.rtsp_url,
         kafka_bootstrap=args.kafka_bootstrap,
-        kafka_topic=args.kafka_topic,
+        kafka_topics=kafka_topics,
         frame_rate=args.frame_rate,
         jpeg_quality=args.jpeg_quality,
     )
@@ -333,4 +360,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

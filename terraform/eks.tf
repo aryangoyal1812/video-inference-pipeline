@@ -12,6 +12,11 @@ module "eks" {
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
+  # Disable KMS key creation to avoid permission issues
+  create_kms_key                   = false
+  cluster_encryption_config        = {}
+  attach_cluster_encryption_policy = false
+
   # EKS Managed Node Group
   eks_managed_node_groups = {
     general = {

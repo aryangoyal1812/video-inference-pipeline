@@ -81,11 +81,6 @@ output "ecr_repository_urls" {
   }
 }
 
-output "consumer_role_arn" {
-  description = "IAM role ARN for consumer pod"
-  value       = aws_iam_role.consumer_pod.arn
-}
-
 output "configure_kubectl" {
   description = "Command to configure kubectl"
   value       = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}"

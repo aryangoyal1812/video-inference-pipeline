@@ -69,12 +69,14 @@ get_terraform_outputs() {
     
     ECR_REGISTRY=$(terraform output -raw ecr_repository_urls | jq -r '.producer' | cut -d'/' -f1)
     KAFKA_BOOTSTRAP=$(terraform output -raw msk_bootstrap_brokers 2>/dev/null || echo "")
-    S3_BUCKET=$(terraform output -raw s3_bucket_name 2>/dev/null || echo "")
+    # Dual-stream S3 buckets
+    S3_BUCKET_1=$(terraform output -raw s3_bucket_name 2>/dev/null || echo "")
+    S3_BUCKET_2=$(terraform output -raw s3_bucket_name_2 2>/dev/null || echo "")
     CONSUMER_ROLE_ARN=$(terraform output -raw consumer_role_arn 2>/dev/null || echo "")
     
     cd ..
     
-    export ECR_REGISTRY KAFKA_BOOTSTRAP S3_BUCKET CONSUMER_ROLE_ARN
+    export ECR_REGISTRY KAFKA_BOOTSTRAP S3_BUCKET_1 S3_BUCKET_2 CONSUMER_ROLE_ARN
 }
 
 build_and_push_images() {
@@ -106,11 +108,12 @@ deploy_kubernetes() {
     # Create namespace
     kubectl apply -f k8s/namespace.yaml
     
-    # Create secrets
+    # Create secrets (includes BOTH S3 buckets for dual-stream)
     kubectl create secret generic video-pipeline-secrets \
         --namespace video-pipeline \
         --from-literal=KAFKA_BOOTSTRAP_SERVERS="$KAFKA_BOOTSTRAP" \
-        --from-literal=S3_BUCKET="$S3_BUCKET" \
+        --from-literal=S3_BUCKET_1="$S3_BUCKET_1" \
+        --from-literal=S3_BUCKET_2="$S3_BUCKET_2" \
         --dry-run=client -o yaml | kubectl apply -f -
     
     # Apply ConfigMap
@@ -150,8 +153,12 @@ deploy_kubernetes() {
 }
 
 show_status() {
-    log_info "=== Deployment Status ==="
+    log_info "=== Deployment Status (Dual-Stream) ==="
     
+    echo ""
+    echo "Dual-Stream Configuration:"
+    echo "  Topics:  video-frames-1, video-frames-2"
+    echo "  Buckets: S3_BUCKET_1, S3_BUCKET_2"
     echo ""
     echo "Deployments:"
     kubectl get deployments -n video-pipeline
@@ -173,7 +180,7 @@ show_status() {
     echo "# Check inference health:"
     echo "curl http://localhost:8000/health"
     echo ""
-    echo "# View consumer logs:"
+    echo "# View consumer logs (processes BOTH topics):"
     echo "kubectl logs -f deployment/consumer -n video-pipeline"
     echo ""
     echo "# Scale down to save costs:"
